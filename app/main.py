@@ -70,7 +70,6 @@ class ModelHolder:
 
 
 
-
 def create_app() -> FastAPI:
     holder = ModelHolder()
     app = FastAPI(title="Fraud Detection API", version="1.0.0")
@@ -94,3 +93,29 @@ def create_app() -> FastAPI:
             "version": holder.version,
             "run_id": holder.run_id,
         }
+
+    @app.post("/reload")
+    def reload():
+        """Re-resolve the alias without restarting the container (e.g. after a promotion)."""
+        if not holder.load():
+            raise HTTPException(503, "reload failed; previous model unavailable")
+        return {"version": holder.version, "run_id": holder.run_id}
+
+    @app.post("/predict", response_model=PredictResponse)
+    def predict(req: PredictRequest):
+        if holder.model is None and not holder.load():
+            raise HTTPException(503, "model not loaded")
+        df = pd.DataFrame([t.model_dump() for t in req.transactions])[FEATURES].astype("float64")
+        out = np.asarray(holder.model.predict(df))
+        proba = out[:, 1] if out.ndim == 2 else out
+        thr = holder.s.decision_threshold
+        return PredictResponse(
+            model_name=holder.s.model_name,
+            model_version=holder.version,
+            predictions=[Prediction(fraud_probability=float(p), is_fraud=bool(p >= thr)) for p in proba],
+        )
+
+    return app
+
+
+app = create_app()
