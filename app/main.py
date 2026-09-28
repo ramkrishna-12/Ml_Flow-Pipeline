@@ -68,3 +68,29 @@ class ModelHolder:
                 self.model = None
                 return False
 
+
+
+
+def create_app() -> FastAPI:
+    holder = ModelHolder()
+    app = FastAPI(title="Fraud Detection API", version="1.0.0")
+    app.state.holder = holder
+
+    @app.on_event("startup")
+    def _startup() -> None:
+        holder.load()
+
+    @app.get("/health")
+    def health():
+        return {"status": "ok"}
+
+    @app.get("/ready")
+    def ready():
+        if holder.model is None and not holder.load():  # lazy retry so a late MLflow doesn't need a restart
+            raise HTTPException(503, "model not loaded")
+        return {
+            "status": "ready",
+            "model_uri": holder.uri,
+            "version": holder.version,
+            "run_id": holder.run_id,
+        }
