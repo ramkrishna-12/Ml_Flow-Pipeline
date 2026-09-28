@@ -39,3 +39,32 @@ class PredictResponse(BaseModel):
     model_name: str
     model_version: str | None
     predictions: list[Prediction]
+    
+    
+
+class ModelHolder:
+    def __init__(self) -> None:
+        self.s = get_settings()
+        self.uri = os.getenv("MODEL_URI", f"models:/{self.s.model_name}@{self.s.champion_alias}")
+        self.model = None
+        self.version: str | None = None
+        self.run_id: str | None = None
+        self._lock = threading.Lock()
+
+    def load(self) -> bool:
+        with self._lock:
+            try:
+                mlflow.set_tracking_uri(self.s.tracking_uri)
+                self.model = mlflow.pyfunc.load_model(self.uri)
+                self.run_id = self.model.metadata.run_id
+                self.version = None
+                if self.uri.startswith("models:/") and "@" in self.uri:
+                    name, alias = self.uri[len("models:/") :].split("@")
+                    self.version = str(MlflowClient().get_model_version_by_alias(name, alias).version)
+                log.info("loaded %s (version=%s run=%s)", self.uri, self.version, self.run_id)
+                return True
+            except Exception:  # noqa: BLE001 - we want to keep the process alive and report not-ready
+                log.exception("model load failed for %s", self.uri)
+                self.model = None
+                return False
+
