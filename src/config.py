@@ -30,3 +30,20 @@ class Settings:
 
     # --- Serving ---
     decision_threshold: float = _env("DECISION_THRESHOLD", 0.5, float)
+    
+    
+
+FEATURES = [
+    "amount",
+    "hour",
+    "merchant_risk",
+    "distance_from_home_km",
+    "txn_count_24h",
+    "account_age_days",
+    "is_foreign",
+]
+
+
+def get_settings() -> Settings:
+    return Settings()
+
