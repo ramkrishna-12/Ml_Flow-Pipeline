@@ -43,3 +43,32 @@ def generate_synthetic(n: int = 20_000, seed: int = 42) -> pd.DataFrame:
     p = 1 / (1 + np.exp(-z))
     df["is_fraud"] = rng.binomial(1, p)
     return df
+
+
+def read_dataset(source: str) -> pd.DataFrame:
+    if source.startswith("s3://"):
+        bucket, key = _split_s3(source)
+        obj = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+        return pd.read_parquet(io.BytesIO(obj["Body"].read()))
+    return pd.read_parquet(source)
+
+
+def write_dataset(df: pd.DataFrame, dest: str) -> None:
+    if dest.startswith("s3://"):
+        bucket, key = _split_s3(dest)
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=False)
+        boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
+    else:
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        df.to_parquet(dest, index=False)
+
+
+def load_or_generate(source: str, n: int = 20_000, seed: int = 42) -> pd.DataFrame:
+    """Read `source`; if it does not exist yet, generate + persist it (bootstraps a fresh env)."""
+    try:
+        return read_dataset(source)
+    except Exception:  # FileNotFoundError locally, NoSuchKey on S3
+        df = generate_synthetic(n, seed)
+        write_dataset(df, source)
+        return df
