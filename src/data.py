@@ -45,6 +45,11 @@ def generate_synthetic(n: int = 20_000, seed: int = 42) -> pd.DataFrame:
     return df
 
 
+def _split_s3(uri: str) -> tuple[str, str]:
+    u = urlparse(uri)
+    return u.netloc, u.path.lstrip("/")
+
+
 def read_dataset(source: str) -> pd.DataFrame:
     if source.startswith("s3://"):
         bucket, key = _split_s3(source)
@@ -72,3 +77,20 @@ def load_or_generate(source: str, n: int = 20_000, seed: int = 42) -> pd.DataFra
         df = generate_synthetic(n, seed)
         write_dataset(df, source)
         return df
+
+
+def validate(df: pd.DataFrame, label_col: str = "is_fraud") -> dict:
+    """Cheap data-quality gate. Fails the pipeline BEFORE we burn compute on garbage."""
+    missing = [c for c in FEATURES + [label_col] if c not in df.columns]
+    if missing:
+        raise DataValidationError(f"missing columns: {missing}")
+    if df[FEATURES + [label_col]].isna().any().any():
+        raise DataValidationError("nulls found in features/label")
+    if len(df) < 1000:
+        raise DataValidationError(f"too few rows: {len(df)}")
+    rate = float(df[label_col].mean())
+    if not 0.001 <= rate <= 0.5:
+        raise DataValidationError(f"suspicious fraud rate: {rate:.4f}")
+    if (df["amount"] < 0).any():
+        raise DataValidationError("negative amounts")
+    return {"rows": len(df), "fraud_rate": round(rate, 4)}
