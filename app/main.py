@@ -29,7 +29,6 @@ class Transaction(BaseModel):
 class PredictRequest(BaseModel):
     transactions: list[Transaction] = Field(min_length=1, max_length=1000)
 
-
 class Prediction(BaseModel):
     fraud_probability: float
     is_fraud: bool

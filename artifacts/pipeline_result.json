@@ -1,0 +1,12 @@
+{
+  "registered": true,
+  "version": 3,
+  "promoted": false,
+  "reason": "pr_auc gain +0.0000 vs champion v1 (need >= 0.002)",
+  "candidate_test_pr_auc": 0.48869442153716447,
+  "champion_test_pr_auc": 0.48869442153716447,
+  "run_id": "732397fca1da4196b7cdcd6a05cf4899",
+  "model_type": "logreg",
+  "tracking_uri": "sqlite:///mlflow.db",
+  "model_name": "fraud-detector"
+}
