@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+mlflow.db
+mlruns/
+mlartifacts/
+artifacts/
+data/
+.pytest_cache/
+.ruff_cache/
+*.tfstate*
+.terraform/
+.env
