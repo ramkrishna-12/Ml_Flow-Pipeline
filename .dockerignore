@@ -1,0 +1,12 @@
+.git
+.github
+infra
+tests
+docs
+mlruns
+mlartifacts
+mlflow.db
+artifacts
+data
+__pycache__
+.venv
