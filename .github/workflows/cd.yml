@@ -1,0 +1,114 @@
+name: cd
+# Continuous TRAINING + DEPLOYMENT.
+#   push to main  -> retrain, gate, register  ->  build image  ->  (approval)  ->  deploy to ECS  -> smoke test
+#   weekly cron   -> retrain on fresh data; deploy ONLY if a new champion was promoted
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  schedule:
+    - cron: "0 2 * * 1"          # Mondays 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: "Deploy even if no new champion was promoted"
+        type: boolean
+        default: false
+
+# GitHub OIDC -> short-lived AWS credentials. No long-lived access keys stored anywhere.
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: cd
+  cancel-in-progress: false      # never kill a deploy half-way
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    environment: staging
+    outputs:
+      promoted: ${{ steps.result.outputs.promoted }}
+      version: ${{ steps.result.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11", cache: pip}
+      - run: pip install -r requirements.txt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Run ML pipeline (ingest -> validate -> sweep -> gate -> register -> promote)
+        # exit 2 = quality gate failed -> job fails, nothing is registered, nothing is deployed
+        run: python -m src.pipeline --out artifacts/pipeline_result.json
+        env:
+          MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+          DATA_SOURCE: s3://${{ vars.DATA_BUCKET }}/data/transactions.parquet
+
+      - name: Publish result for downstream jobs
+        id: result
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          r = json.load(open("artifacts/pipeline_result.json"))
+          print(f"promoted={str(r['promoted']).lower()}")
+          print(f"version={r.get('version', '')}")
+          PY
+          python -c "import json; r=json.load(open('artifacts/pipeline_result.json')); print('### Model pipeline\n', json.dumps(r, indent=2))" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-result
+          path: artifacts/pipeline_result.json
+
+  deploy:
+    needs: train
+    # Code push -> always ship the new image. Cron -> only when a new champion needs to go live.
+    if: github.event_name != 'schedule' || needs.train.outputs.promoted == 'true' || inputs.force_deploy
+    runs-on: ubuntu-latest
+    environment: production        # <- required reviewers = manual approval gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push API image (code only; the model is pulled from the registry at start-up)
+        id: build
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_API_REPO }}
+        run: |
+          docker build -t "$IMAGE:${GITHUB_SHA}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${GITHUB_SHA}"
+          docker push "$IMAGE:latest"
+          echo "image=$IMAGE:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the live task definition (Terraform owns its shape, CD only swaps the image)
+        run: |
+          aws ecs describe-task-definition --task-definition "${{ vars.ECS_API_TASK_FAMILY }}" \
+            --query taskDefinition > taskdef.json
+      - id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: taskdef.json
+          container-name: api
+          image: ${{ steps.build.outputs.image }}
+      - name: Rolling deploy (ECS circuit breaker auto-rolls back if new tasks never become /ready)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          cluster: ${{ vars.ECS_CLUSTER }}
+          service: ${{ vars.ECS_API_SERVICE }}
+          wait-for-service-stability: true
+
+      - name: Smoke test the live endpoint
+        run: python scripts/smoke_test.py --url "${{ vars.API_URL }}"
