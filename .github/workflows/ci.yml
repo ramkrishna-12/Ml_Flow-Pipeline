@@ -1,0 +1,76 @@
+name: ci
+# Continuous INTEGRATION: every PR proves the code, the ML pipeline and the infra still work.
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]   # main is handled by cd.yml
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check . && ruff format --check .
+      - run: pytest -q --junitxml=pytest.xml
+
+  pipeline-smoke:
+    # Runs the REAL pipeline (train -> gate -> register -> promote) against a throwaway sqlite MLflow.
+    # Catches "works in pytest, breaks as a CLI" and any MLflow API drift.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11", cache: pip}
+      - run: pip install -r requirements.txt
+      - run: python -m src.pipeline --no-sweep --rows 10000
+        env:
+          MLFLOW_TRACKING_URI: sqlite:///ci-mlflow.db
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-result
+          path: |
+            artifacts/pipeline_result.json
+            ci-mlflow.db
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: fraud-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Container starts and is alive (no model registry in CI, so only /health)
+        run: |
+          docker run -d --name api -p 8000:8000 fraud-api:ci
+          for i in $(seq 1 20); do curl -fsS localhost:8000/health && exit 0; sleep 2; done
+          docker logs api; exit 1
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate
