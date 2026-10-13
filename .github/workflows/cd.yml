@@ -25,7 +25,7 @@ concurrency:
   cancel-in-progress: false      # never kill a deploy half-way
 
 env:
-  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_REGION: ap-south-1
 
 jobs:
   train:
@@ -42,8 +42,7 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
+          aws-region: ${{ env.AWS_REGION }}
       - name: Run ML pipeline (ingest -> validate -> sweep -> gate -> register -> promote)
         # exit 2 = quality gate failed -> job fails, nothing is registered, nothing is deployed
         run: python -m src.pipeline --out artifacts/pipeline_result.json
@@ -78,7 +77,7 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
